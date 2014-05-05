@@ -117,7 +117,8 @@ Simple_Thread::Simple_Thread(IO_Pattern* generator, IO_Mode_Generator* mode_gen,
 	  MAX_IOS(MAX_OUTSTANDING_IOS),
 	  io_gen(generator),
 	  io_type_gen(mode_gen),
-	  number_of_times_to_repeat(num_IOs)
+	  number_of_times_to_repeat(num_IOs),
+	  io_size(1)
 {
 	assert(MAX_IOS > 0);
 }
@@ -126,7 +127,8 @@ Simple_Thread::Simple_Thread(IO_Pattern* generator, int MAX_IOS, IO_Mode_Generat
 	: Thread(),
 	  MAX_IOS(MAX_IOS),
 	  io_gen(generator),
-	  io_type_gen(mode_gen)
+	  io_type_gen(mode_gen),
+	  io_size(1)
 {
 	assert(MAX_IOS > 0);
 	number_of_times_to_repeat = generator->max_LBA - generator->min_LBA + 1;
@@ -142,7 +144,7 @@ void Simple_Thread::generate_io() {
 		number_of_times_to_repeat--;
 		event_type type = io_type_gen->next();
 		long logical_addr = io_gen->next();
-		Event* e = new Event(type, logical_addr, 1, get_current_time());
+		Event* e = new Event(type, logical_addr, io_size, get_current_time());
 		submit(e);
 	}
 

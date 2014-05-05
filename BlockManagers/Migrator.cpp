@@ -5,7 +5,8 @@ Migrator::Migrator() :
 		scheduler(NULL), bm(NULL), gc(NULL), wl(NULL), ftl(NULL), ssd(NULL), page_copy_back_count(),
 		num_blocks_being_garbaged_collected_per_LUN(SSD_SIZE, vector<uint>(PACKAGE_SIZE, 0)),
 		blocks_being_garbage_collected(),
-		num_erases_scheduled_per_package(SSD_SIZE)
+		num_erases_scheduled_per_package(SSD_SIZE),
+		dependent_gc()
 {}
 
 Migrator::~Migrator() {
@@ -60,16 +61,17 @@ void Migrator::handle_erase_completion(Event* event) {
 		}
 	}
 
+	num_blocks_being_garbaged_collected_per_LUN[a.package][a.die]--;
+	blocks_being_garbage_collected.erase(a.get_linear_address());
+
 	if (PRINT_LEVEL > 1) {
+		printf("Finishing GC in %d \n", a.get_linear_address());
 		printf("%lu GC operations taking place now. On:   ", blocks_being_garbage_collected.size());
-		for (map<int, int>::iterator iter = blocks_being_garbage_collected.begin(); iter != blocks_being_garbage_collected.end(); iter++) {
+		for (map<int, int>::const_iterator iter = blocks_being_garbage_collected.begin(); iter != blocks_being_garbage_collected.end(); iter++) {
 			printf("%d  ", (*iter).first);
 		}
 		printf("\n");
 	}
-
-	num_blocks_being_garbaged_collected_per_LUN[a.package][a.die]--;
-	blocks_being_garbage_collected.erase(a.get_linear_address());
 }
 
 void Migrator::handle_trim_completion(Event* event) {
@@ -88,8 +90,8 @@ void Migrator::handle_trim_completion(Event* event) {
 	assert(ra.get_linear_address() == phys_addr);
 
 	if (blocks_being_garbage_collected.count(block.get_physical_address()) == 1) {
-		assert(blocks_being_garbage_collected[block.get_physical_address()] > 0);
-		blocks_being_garbage_collected[block.get_physical_address()]--;
+		assert(blocks_being_garbage_collected.at(block.get_physical_address()) > 0);
+		blocks_being_garbage_collected.at(block.get_physical_address())--;
 	}
 
 	// TODO: fix thresholds for inserting blocks into GC lists. ALSO Revise the condition.
@@ -100,12 +102,11 @@ void Migrator::handle_trim_completion(Event* event) {
 
 	if (blocks_being_garbage_collected.count(phys_addr) == 0 && block.get_state() == INACTIVE) {
 		gc->remove_as_gc_candidate(ra);
-		//gc_candidates[ra.package][ra.die][age_class].erase(phys_addr);
 		blocks_being_garbage_collected[phys_addr] = 0;
 		num_blocks_being_garbaged_collected_per_LUN[ra.package][ra.die]++;
 		issue_erase(ra, event->get_current_time());
 	}
-	else if (blocks_being_garbage_collected.count(phys_addr) == 1 && blocks_being_garbage_collected[phys_addr] == 0) {
+	else if (blocks_being_garbage_collected.count(phys_addr) == 1 && blocks_being_garbage_collected.at(phys_addr) == 0) {
 		assert(block.get_state() == INACTIVE);
 		blocks_being_garbage_collected[phys_addr]--;
 		issue_erase(ra, event->get_current_time());
@@ -127,7 +128,7 @@ void Migrator::issue_erase(Address ra, double time) {
 	if (PRINT_LEVEL > 1) {
 		printf("block %lu", ra.get_linear_address()); printf(" is now invalid. An erase is issued: "); erase->print();
 		printf("%lu GC operations taking place now. On:   ", blocks_being_garbage_collected.size());
-		for (map<int, int>::iterator iter = blocks_being_garbage_collected.begin(); iter != blocks_being_garbage_collected.end(); iter++) {
+		for (map<int, int>::const_iterator iter = blocks_being_garbage_collected.begin(); iter != blocks_being_garbage_collected.end(); iter++) {
 			printf("%d  ", (*iter).first);
 		}
 		printf("\n");
@@ -163,6 +164,7 @@ void Migrator::schedule_gc(double time, int package, int die, int block, int kla
 		address.valid = DIE;
 	} else if (package >= 0 && die >= 0 && block >= 0) {
 		address.valid = BLOCK;
+		// TODO add the wear leveling as a parameter to this method
 		gc_event->set_wear_leveling_op(true);
 	} else {
 		assert(false);
@@ -178,6 +180,35 @@ void Migrator::schedule_gc(double time, int package, int die, int block, int kla
 		printf("scheduling gc in (%d %d %d %d)  -  ", package, die, block, klass); gc_event->print();
 	}
 	scheduler->schedule_event(gc_event);
+}
+
+// Returns true if a copy back is allowed on a given logical address
+bool Migrator::copy_back_allowed_on(long logical_address) {
+	if (MAX_REPEATED_COPY_BACKS_ALLOWED <= 0 || MAX_ITEMS_IN_COPY_BACK_MAP <= 0) return false;
+	//map<long, uint>::iterator copy_back_count = page_copy_back_count.find(logical_address);
+	bool address_in_map = page_copy_back_count.count(logical_address) == 1; //(copy_back_count != page_copy_back_count.end());
+	// If address is not in map and map is full, or if page has already been copy backed as many times as allowed, copy back is not allowed
+	if ((!address_in_map && page_copy_back_count.size() >= MAX_ITEMS_IN_COPY_BACK_MAP) ||
+		( address_in_map && page_copy_back_count[logical_address] >= MAX_REPEATED_COPY_BACKS_ALLOWED)) return false;
+	else return true;
+}
+
+// Updates map keeping track of performed copy backs for each logical address
+void Migrator::register_copy_back_operation_on(uint logical_address) {
+	page_copy_back_count[logical_address]++; // Increment copy back counter for target page (if address is not yet in map, it will be inserted and count will become 1)
+}
+
+// Signals than an ECC check has been performed on a page, meaning that it can be copy backed again in the future
+void Migrator::register_ECC_check_on(uint logical_address) {
+	page_copy_back_count.erase(logical_address);
+}
+
+void Migrator::update_structures(Address const& a) {
+	Block* victim = ssd->get_package(a.package)->get_die(a.die)->get_plane(a.plane)->get_block(a.block);
+	gc->remove_as_gc_candidate(a);
+	blocks_being_garbage_collected[victim->get_physical_address()] = victim->get_pages_valid();
+	num_blocks_being_garbaged_collected_per_LUN[a.package][a.die]++;
+	StatisticsGatherer::get_global_instance()->register_executed_gc(*victim);
 }
 
 vector<deque<Event*> > Migrator::migrate(Event* gc_event) {
@@ -229,20 +260,23 @@ vector<deque<Event*> > Migrator::migrate(Event* gc_event) {
 		return migrations;
 	}*/
 
-	if (is_wear_leveling_op && !wl->schedule_wear_leveling_op(victim)) {
+	/*if (is_wear_leveling_op && !wl->schedule_wear_leveling_op(victim)) {
 		return migrations;
+	}*/
+
+	if (victim->get_physical_address() == 976 && gc_event->get_start_time() > 39548840) {
+		int i = 0;
+		i++;
 	}
 
-	gc->remove_as_gc_candidate(addr);
-
-	blocks_being_garbage_collected[victim->get_physical_address()] = victim->get_pages_valid();
-	num_blocks_being_garbaged_collected_per_LUN[addr.package][addr.die]++;
+	update_structures(addr);
+	bm->subtract_from_available_for_new_writes(victim->get_pages_valid());
 
 	if (PRINT_LEVEL > 1) {
 		printf("num gc operations in (%d %d) : %d  ", addr.package, addr.die, num_blocks_being_garbaged_collected_per_LUN[addr.package][addr.die]);
 		printf("Triggering GC in %ld    time: %f  ", victim->get_physical_address(), gc_event->get_current_time()); addr.print(); printf(". Migrating %d \n", victim->get_pages_valid());
 		printf("%lu GC operations taking place now. On:   ", blocks_being_garbage_collected.size());
-		for (map<int, int>::iterator iter = blocks_being_garbage_collected.begin(); iter != blocks_being_garbage_collected.end(); iter++) {
+		for (map<int, int>::const_iterator iter = blocks_being_garbage_collected.begin(); iter != blocks_being_garbage_collected.end(); iter++) {
 			printf("%d  ", (*iter).first);
 		}
 		printf("\n");
@@ -251,12 +285,13 @@ vector<deque<Event*> > Migrator::migrate(Event* gc_event) {
 	assert(victim->get_state() != FREE);
 	assert(victim->get_state() != PARTIALLY_FREE);
 
-	bm->subtract_from_available_for_new_writes(victim->get_pages_valid());
+
 	//printf("num_available_pages_for_new_writes:  %d\n", num_available_pages_for_new_writes);
 
 	//deque<Event*> cb_migrations; // We put all copy back GC operations on one deque and push it on migrations vector. This makes the CB migrations happen in order as they should.
-	StatisticsGatherer::get_global_instance()->register_executed_gc(*gc_event, *victim);
+
 	// TODO: for DFTL, we in fact do not know the LBA when we dispatch the write. We get this from the OOB. Need to fix this.
+	//PRINT_LEVEL = 1;
 	for (uint i = 0; i < BLOCK_SIZE; i++) {
 		if (victim->get_page(i).get_state() == VALID) {
 
@@ -288,6 +323,11 @@ vector<deque<Event*> > Migrator::migrate(Event* gc_event) {
 				read->set_address(addr);
 				read->set_garbage_collection_op(true);
 
+				if (victim->get_physical_address() == 976) {
+					int i = 0;
+					i++;
+				}
+
 				Event* write = new Event(WRITE, logical_address, 1, gc_event->get_current_time());
 				write->set_garbage_collection_op(true);
 				write->set_replace_address(addr);
@@ -302,7 +342,15 @@ vector<deque<Event*> > Migrator::migrate(Event* gc_event) {
 
 				//register_ECC_check_on(logical_address); // An ECC check happens in a normal read-write GC operation
 			}
-			migrations.push_back(migration);
+
+			long block_id = addr.get_block_id();
+			if (dependent_gc.count(block_id) == 0) {
+				migrations.push_back(migration);
+				dependent_gc[block_id] = vector<deque<Event* > >();
+			}
+			else {
+				dependent_gc.at(block_id).push_back(migration);
+			}
 		}
 	}
 	//if (cb_migrations.size() > 0) migrations.push_back(cb_migrations);
@@ -310,26 +358,42 @@ vector<deque<Event*> > Migrator::migrate(Event* gc_event) {
 	return migrations;
 }
 
-// Returns true if a copy back is allowed on a given logical address
-bool Migrator::copy_back_allowed_on(long logical_address) {
-	if (MAX_REPEATED_COPY_BACKS_ALLOWED <= 0 || MAX_ITEMS_IN_COPY_BACK_MAP <= 0) return false;
-	//map<long, uint>::iterator copy_back_count = page_copy_back_count.find(logical_address);
-	bool address_in_map = page_copy_back_count.count(logical_address) == 1; //(copy_back_count != page_copy_back_count.end());
-	// If address is not in map and map is full, or if page has already been copy backed as many times as allowed, copy back is not allowed
-	if ((!address_in_map && page_copy_back_count.size() >= MAX_ITEMS_IN_COPY_BACK_MAP) ||
-		( address_in_map && page_copy_back_count[logical_address] >= MAX_REPEATED_COPY_BACKS_ALLOWED)) return false;
-	else return true;
+void Migrator::print_pending_migrations() {
+	for (auto block : dependent_gc) {
+		cout << block.first * BLOCK_SIZE << endl;
+		for (auto migration : block.second) {
+			migration[0]->get_address().print();
+			cout << endl;
+		}
+	}
 }
 
-// Updates map keeping track of performed copy backs for each logical address
-void Migrator::register_copy_back_operation_on(uint logical_address) {
-	page_copy_back_count[logical_address]++; // Increment copy back counter for target page (if address is not yet in map, it will be inserted and count will become 1)
+bool Migrator::more_migrations(Event * gc_read) {
+	int block_id = gc_read->get_address().get_block_id();
+	if (dependent_gc.count(block_id) == 1 && dependent_gc.at(block_id).size() > 0) {
+		return true;
+	}
+	else if (dependent_gc.count(block_id) == 1) {
+		dependent_gc.erase(block_id);
+	}
+	return false;
 }
 
-// Signals than an ECC check has been performed on a page, meaning that it can be copy backed again in the future
-void Migrator::register_ECC_check_on(uint logical_address) {
-	page_copy_back_count.erase(logical_address);
+deque<Event*> Migrator::trigger_next_migration(Event * gc_read) {
+	int block_id = gc_read->get_address().get_block_id();
+	assert(dependent_gc.count(block_id) == 1 && dependent_gc.at(block_id).size() > 0);
+	deque<Event*> next_migration = dependent_gc.at(block_id).back();
+	dependent_gc.at(block_id).pop_back();
+
+	if ( dependent_gc.at(block_id).empty()) {
+		dependent_gc.erase(block_id);
+	}
+
+	return next_migration;
 }
+
+
+
 
 /*bool Block_manager_parent::schedule_queued_erase(Address location) {
 	int package = location.package;

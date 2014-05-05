@@ -17,16 +17,23 @@ class Priorty_Scheme {
 public:
 	Priorty_Scheme(IOScheduler* scheduler) : scheduler(scheduler) {}
 	virtual ~Priorty_Scheme() {};
-	virtual void schedule(vector<Event*>& read_commands, vector<Event*>& copyback_commands, vector<Event*>& writes, vector<Event*>& erases) = 0;
-	void seperate_internal_external(vector<Event*> const& events, vector<Event*>& internal, vector<Event*>& external);
+	virtual void schedule(vector<Event*>& events) = 0;
 protected:
+	void seperate_internal_external(vector<Event*> const& events, vector<Event*>& internal, vector<Event*>& external);
+	void seperate_by_type(vector<Event*> const& events, vector<Event*>& read_commands, vector<Event*>& copyback_commands, vector<Event*>& writes, vector<Event*>& erases);
 	IOScheduler* scheduler;
 };
 
 class Fifo_Priorty_Scheme : public Priorty_Scheme {
 public:
 	Fifo_Priorty_Scheme(IOScheduler* scheduler) : Priorty_Scheme(scheduler) {};
-	void schedule(vector<Event*>& read_commands, vector<Event*>& copyback_commands, vector<Event*>& writes, vector<Event*>& erases);
+	void schedule(vector<Event*>& events);
+};
+
+class Noop_Priorty_Scheme : public Priorty_Scheme {
+public:
+	Noop_Priorty_Scheme(IOScheduler* scheduler) : Priorty_Scheme(scheduler) {};
+	void schedule(vector<Event*>& events);
 };
 
 /*class Re_Er_Wr_Priorty_Scheme : public Priorty_Scheme {
@@ -38,31 +45,32 @@ public:
 class Er_Wr_Re_gcRe_gcWr_Priorty_Scheme : public Priorty_Scheme {
 public:
 	Er_Wr_Re_gcRe_gcWr_Priorty_Scheme(IOScheduler* scheduler) : Priorty_Scheme(scheduler) {};
-	void schedule(vector<Event*>& read_commands, vector<Event*>& copyback_commands, vector<Event*>& writes, vector<Event*>& erases);
+	void schedule(vector<Event*>& events);
 };
 
 class gcRe_gcWr_Er_Re_Wr_Priorty_Scheme : public Priorty_Scheme {
 public:
 	gcRe_gcWr_Er_Re_Wr_Priorty_Scheme(IOScheduler* scheduler) : Priorty_Scheme(scheduler) {};
-	void schedule(vector<Event*>& read_commands, vector<Event*>& copyback_commands, vector<Event*>& writes, vector<Event*>& erases);
+	void schedule(vector<Event*>& events);
 };
 
 class We_Re_gcWr_E_gcR_Priorty_Scheme : public Priorty_Scheme {
 public:
 	We_Re_gcWr_E_gcR_Priorty_Scheme(IOScheduler* scheduler) : Priorty_Scheme(scheduler) {};
-	void schedule(vector<Event*>& read_commands, vector<Event*>& copyback_commands, vector<Event*>& writes, vector<Event*>& erases);
+	void schedule(vector<Event*>& events);
 };
 
 class Smart_App_Priorty_Scheme : public Priorty_Scheme {
 public:
 	Smart_App_Priorty_Scheme(IOScheduler* scheduler) : Priorty_Scheme(scheduler) {};
-	void schedule(vector<Event*>& read_commands, vector<Event*>& copyback_commands, vector<Event*>& writes, vector<Event*>& erases);
+	void schedule(vector<Event*>& events);
 };
 
 class event_queue {
 public:
 	event_queue() : events(), num_events(0) {};
 	virtual ~event_queue();
+	virtual void push(Event*, double value);
 	virtual void push(Event*);
 	vector<Event*> get_soonest_events();
 	virtual bool remove(Event*);
@@ -101,11 +109,12 @@ public:
 	void init(Ssd*, FtlParent*, Block_manager_parent*, Migrator*);
 	void init();
 	void schedule_events_queue(deque<Event*> events);
-	void schedule_event(Event* events);
+	void schedule_event(Event* event);
 	bool is_empty();
 	void execute_soonest_events();
 	void handle(vector<Event*>& events);
 	void handle_noop_events(vector<Event*>& events);
+	void inform_FTL_of_noop_completion(Event* event);
     friend class boost::serialization::access;
     template<class Archive>
     void serialize(Archive & ar, const unsigned int version)
@@ -121,6 +130,7 @@ public:
 private:
 	void setup_structures(deque<Event*> events);
 	enum status execute_next(Event* event);
+	void trigger_next_migration(Event* event);
 	void execute_current_waiting_ios();
 	void handle_event(Event* event);
 	void handle_write(Event* event);

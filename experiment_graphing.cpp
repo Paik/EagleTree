@@ -230,7 +230,11 @@ void Experiment::waittime_histogram(int sizeX, int sizeY, string outputFile, Exp
 	vector<string> commands;
 	for (uint i = 0; i < points.size(); i++) {
 		stringstream command;
-		command << "hist 0 " << i << " \"" << Experiment_Result::waittime_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Wait time histogram (" << experiment.variable_parameter_name << " = " << points[i] << ")\" \"log min 1\" \"Event wait time (µs)\" " << max(experiment.max_waittimes[black_column], (red_column == -1 ? 0 : experiment.max_waittimes[red_column])) << " " << StatisticsGatherer::get_global_instance()->get_wait_time_histogram_bin_size() << " " << black_column << " " << red_column;
+		command << "hist 0 " << i << " \"" << Experiment_Result::waittime_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Wait time histogram";
+		if (!experiment.variable_parameter_name.empty()) {
+			command << "(" << experiment.variable_parameter_name << " = " << points[i] << ")";
+		}
+		command << "\" \"log min 1\" \"Event wait time (µs)\" " << max(experiment.max_waittimes[black_column], (red_column == -1 ? 0 : experiment.max_waittimes[red_column])) << " " << StatisticsGatherer::get_global_instance()->get_wait_time_histogram_bin_size() << " " << black_column << " " << red_column;
 		commands.push_back(command.str());
 	}
 
@@ -269,7 +273,11 @@ void Experiment::age_histogram(int sizeX, int sizeY, string outputFile, Experime
 	vector<string> commands;
 	for (uint i = 0; i < points.size(); i++) {
 		stringstream command;
-		command << "hist 0 " << i << " \"" << Experiment_Result::age_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Block age histogram (" << experiment.variable_parameter_name << " = " << points[i] << ")\" \"on min 0 max " << experiment.max_age_freq << "\" \"Block age\" age_max " << SsdStatisticsExtractor::get_age_histogram_bin_size();
+		command << "hist 0 " << i << " \"" << Experiment_Result::age_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Block age histogram ";
+		if (!experiment.variable_parameter_name.empty()) {
+			command	<< "(" << experiment.variable_parameter_name << " = " << points[i] << ")";
+		}
+		command << "\" \"on min 0 max " << experiment.max_age_freq << "\" \"Block age\" age_max " << SsdStatisticsExtractor::get_age_histogram_bin_size();
 		commands.push_back(command.str());
 	}
 
@@ -280,7 +288,11 @@ void Experiment::queue_length_history(int sizeX, int sizeY, string outputFile, E
 	vector<string> commands;
 	for (uint i = 0; i < points.size(); i++) {
 		stringstream command;
-		command << "plot 0 " << i << " \"" << Experiment_Result::queue_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Queue length history (" << experiment.variable_parameter_name << " = " << points[i] << ")\" \"on\" \"Timeline (µs progressed)\" \"Items in event queue\"";
+		command << "plot 0 " << i << " \"" << Experiment_Result::queue_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Queue length history ";
+		if (!experiment.variable_parameter_name.empty()) {
+			command << "(" << experiment.variable_parameter_name << " = " << points[i] << ")";
+		}
+		command  << "\" \"on\" \"Timeline (µs progressed)\" \"Items in event queue\"";
 		commands.push_back(command.str());
 	}
 
@@ -291,7 +303,11 @@ void Experiment::throughput_history(int sizeX, int sizeY, string outputFile, Exp
 	vector<string> commands;
 	for (uint i = 0; i < points.size(); i++) {
 		stringstream command;
-		command << "plot 0 " << i << " \"" << Experiment_Result::throughput_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Throughput history (" << experiment.variable_parameter_name << " = " << points[i] << ")\" \"on\" \"Timeline (µs progressed)\" \"Throughput (IOs/s)\" " << 2;
+		command << "plot 0 " << i << " \"" << Experiment_Result::throughput_filename_prefix << points[i] << Experiment_Result::datafile_postfix << "\" \"Throughput history ";
+		if (!experiment.variable_parameter_name.empty()) {
+			command << "(" << experiment.variable_parameter_name << " = " << points[i] << ")";
+		}
+		command << "\" \"on\" \"Timeline (µs progressed)\" \"Throughput (IOs/s)\" " << 2;
 
 		//printf("%s\n", command.str().c_str());
 		commands.push_back(command.str());
@@ -460,7 +476,7 @@ void Experiment::draw_experiment_spesific_graphs() {
 			x_vals.push_back(0);
 		}
 
-		uint mean_pos_in_datafile = std::find(results[0][0].column_names.begin(), results[0][0].column_names.end(), "Write latency, mean (µs)") - results[0][0].column_names.begin();
+		uint mean_pos_in_datafile = std::find(results[0][0].column_names.begin(), results[0][0].column_names.end(), "Write latency, mean (us)") - results[0][0].column_names.begin();
 		assert(mean_pos_in_datafile != results[0][0].column_names.size());
 
 		for (uint j = 0; j < results.size(); j++) {
